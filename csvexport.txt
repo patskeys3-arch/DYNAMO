@@ -1,0 +1,132 @@
+###
+IN[0] = summary list from your existing Python node
+IN[1] = rim COGO points
+IN[2] = invert COGO points
+IN[3] = full CSV file pat
+###
+
+
+import csv
+import os
+import math
+
+
+summary = IN[0] if IN[0] else []
+rim_points = IN[1] if IN[1] else []
+invert_points = IN[2] if IN[2] else []
+file_path = IN[3]
+
+
+def _as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _point_xyz(item):
+    if item is None:
+        return None
+    if all(hasattr(item, axis) for axis in ("X", "Y")):
+        z = getattr(item, "Z", 0.0)
+        return (float(item.X), float(item.Y), float(z))
+    if all(hasattr(item, axis) for axis in ("Easting", "Northing")):
+        z = getattr(item, "Elevation", 0.0)
+        return (float(item.Easting), float(item.Northing), float(z))
+    if hasattr(item, "PointGeometry"):
+        geom = item.PointGeometry
+        if geom and all(hasattr(geom, axis) for axis in ("X", "Y")):
+            z = getattr(geom, "Z", 0.0)
+            return (float(geom.X), float(geom.Y), float(z))
+    return None
+
+
+def _point_number(item):
+    for name in ("PointNumber", "Number"):
+        if hasattr(item, name):
+            try:
+                return getattr(item, name)
+            except Exception:
+                pass
+    return ""
+
+
+def _distance_xy(a, b):
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    return dx * dx + dy * dy
+
+
+summary = _as_list(summary)
+rim_points = _as_list(rim_points)
+invert_points = _as_list(invert_points)
+
+if not file_path:
+    OUT = "Missing file path."
+else:
+    folder = os.path.dirname(file_path)
+    if folder and not os.path.exists(folder):
+        os.makedirs(folder)
+
+    rim_records = []
+    for i, rim in enumerate(rim_points):
+        xyz = _point_xyz(rim)
+        pt_num = _point_number(rim)
+        rim_records.append(
+            {
+                "index": i,
+                "xyz": xyz,
+                "pointNumber": pt_num,
+                "invertPointNumbers": [],
+            }
+        )
+
+    # assign each invert point number to nearest rim point
+    for inv in invert_points:
+        inv_xyz = _point_xyz(inv)
+        inv_num = _point_number(inv)
+        if inv_xyz is None or not rim_records:
+            continue
+        nearest = min(
+            [r for r in rim_records if r["xyz"] is not None],
+            key=lambda r: _distance_xy(inv_xyz, r["xyz"])
+        )
+        nearest["invertPointNumbers"].append(inv_num)
+
+    with open(file_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "rimPointNumber",
+            "rimElevation",
+            "invertPointNumbers",
+            "invertLabels",
+            "mtextContents",
+        ])
+
+        for i, item in enumerate(summary):
+            rim_elev = item.get("rimElevation", "")
+            invert_labels = item.get("invertLabels", [])
+            mtext = item.get("mtextContents", "")
+
+            if invert_labels is None:
+                invert_labels = []
+            if not isinstance(invert_labels, list):
+                invert_labels = [invert_labels]
+
+            rim_num = ""
+            invert_nums = []
+
+            if i < len(rim_records):
+                rim_num = rim_records[i]["pointNumber"]
+                invert_nums = rim_records[i]["invertPointNumbers"]
+
+            writer.writerow([
+                rim_num,
+                rim_elev,
+                " | ".join(str(x) for x in invert_nums if x not in (None, "")),
+                " | ".join(str(x) for x in invert_labels if x not in (None, "")),
+                mtext,
+            ])
+
+    OUT = file_path
